@@ -59,26 +59,21 @@ where *x*<sub>*i**n**d*</sub> is a realization of the random variable
 represents its complement color.
 
 Confidence in the individual decision is estimated by the log-odds in
-favour of the chosen world state (Rollwage and Fleming 2021) as
-
-$LO\_{ind}= \frac{2\mu X\_{ind}}{\sigma^2}$ which may be, for example,
-$LO_i= \frac{2(0.48) X\_{ind}}{0.025}$.
-
-Using the logistic function the log-odds can be transformed into the
-probability of answering correctly (Rollwage and Fleming 2021)
-
-$confidence\_{ind} = \frac{e^{LO\_{ind}}}{1+e^{LO\_{ind}}}$.
+favour of the chosen world state and using the logistic function the
+log-odds can be transformed into the probability of answering correctly
+(Rollwage and Fleming 2021).
 
 After the initial decision, the agent receives additional information in
 the form of answers given by other agents modeled as previously
 described. Nonetheless, we can manipulate the other agent’s accuracy by
 sampling sigma from a distribution. Thus, in the simplest case all
-agents have the same *σ*<sup>2</sup>, which means that the precision
-$\lambda = \frac{1}{\sigma^2}$ of their information is the same. In
-another scenario, the precision of each agent depends upon a random
-process as *σ*<sup>2</sup> ∼ *I**n**v**G**a**m**m**a*(*α*,*β*) where the
-mean is fixed and defined $\frac{\beta}{\alpha - 1}=0.025$. Since there
-are potentially
+agents have the same *σ*<sup>2</sup>, which means that the precision of
+their information is the same. In another scenario, the precision of
+each agent depends upon a random process (modeled by an inverse gamma
+distribution) as *σ*<sup>2</sup> ∼ *I**G*(*α*,*β*) where the mean is
+fixed at 0.025. Since there are potentially infinite values of *α* and
+*β* with the same mean, we vary over different combinations of
+parameters that satisfy the above condition.
 
 Germar, Markus, Alexander Schlemmer, Kristine Krug, Andreas Voss, and
 Andreas Mojzisch. 2014. “Social Influence and Perceptual Decision
