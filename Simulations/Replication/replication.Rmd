@@ -1,0 +1,183 @@
+---
+title: "Replication"
+output: html_notebook
+---
+
+```{r, message=FALSE}
+library(tidyverse)
+```
+
+
+We try to replicate the method of @Rollwage2021 with minimal modifications.
+
+# Fixed mean and variance
+
+## Parameter definition
+
+Following the definition given by @Rollowage2021
+
+> We fixed $\mu$= 1 (or−1, respectively)
+
+We fix the mean to 1.
+
+```{r, mean-fixed}
+mu <- 1
+```
+
+However we keep the variance (standard deviation in the case of the parameter for the `norm` family of functions in `R`) constant for all agents. This would be the same as looking only on the diagonal of the matrices in Figure 1 of @Rollowage2021. 
+
+Altough all agents have the same variance, we calculate the same number of different variances which is the same as the different number of strengths. 
+
+```{r, var-fixed}
+fixed_sigmas <- 1/seq(0.3,1.2, 0.1)
+```
+
+Now we calculate all of the possible combinations of both parameters. 
+
+```{r}
+fixed_parameters_combination <- expand.grid(mu, fixed_sigmas) %>%
+  rename(mu = Var1, sigma = Var2)
+```
+
+## Agent definition
+
+Now we create a function named `trial_compute` that computes 20 thousand trials (20,000) for a given combination. Note that we employ 10% of the total trials used by @Rollowage2021. The function expects three arguments which are the two parameters defining the `rnorm` function and the number of observations which is fixed at 20 thousand by default. The function calculates the agent decision, the decision correcteness (i.e. status) and the strength of the information for that agent. 
+
+```{r}
+trial_compute <- function(mu_param, sigma_param, n_trials = 20000){
+  agent_information <- rnorm(n_trials, mu_param, sigma_param)
+  agent_df <- tibble(x_ind = agent_information) %>%
+    mutate(
+      decision_ind = ifelse(x_ind > 0, 1, -1),
+      status = ifelse(decision_ind == 1, TRUE, FALSE),
+      strength = mu_param/sigma_param,
+      log_odd_conf = (2*mu_param*x_ind)/sigma_param^2,
+      confidence_ind = exp(log_odd_conf)/(1+exp(log_odd_conf))
+    )
+  return(agent_df)
+}
+```
+
+To generate other agent's opinions we employ the same function (`trial_compute`). The `n_trials` argument controls the number of agents expressing their opinions and is randomly selected from a uniform distribution between 2 and 12. From the function output, in this instance we are only interested in the decision that each agent took which is the only thing our agent of interest has access to. 
+
+```{r}
+other_agents <- function(mu_param, sigma_param, n_trials){
+  others_information <- trial_compute(mu_param, sigma_param, n_trials)
+  others_information %>% 
+    summary(
+      correct_decision = mean(decision_ind == 1),
+      incorrect_decision = mean(decision_ind == -1),
+      correct_n = sum(decision_ind == 1),
+      incorrect_n = sum(decision_ind == -1),
+      n_agents = n_trials
+    )
+}
+```
+
+
+## Simulation
+
+First we run the simulation to get a sense of the accuracy of a single agent deciding on its own with different levels of information strength. 
+
+To do this we iterate over each combination of parameters and call the `trial_compute` function. each time the function is called we calculate the mean of the `status` column.
+
+```{r}
+one_sample_ind_performance <- pmap(
+  fixed_parameters_combination,
+  ~ trial_compute(.x, .y) %>%
+    summarise(accuracy = mean(status)) 
+) %>% bind_rows() %>% cbind(mu/fixed_sigmas) %>% 
+  rename(strength = `mu/fixed_sigmas`)
+```
+
+We plot the results to get a sense of the accuracy for each given level of information strength.
+
+```{r}
+ggplot(one_sample_ind_performance,
+       aes(x = strength, y = accuracy)) +
+  geom_col()
+```
+
+We create another function to replicate the results of Figure 1a. but with a different calculation where
+
+$LO_{post} = {2*\mu*sign(X_{post})}\over{\sigma^2}$ given that we cannot access $X_{post}$ directly. 
+
+The function takes two arguments, the first argument is the $\sigma$ value of the first information sample and the second argument is the $\sigma$ value of the second information sample. For each combination of $\sigma$ the function calls `trial_compute` twice. The first call with the first $\sigma$ value and the second call with the second $\sigma$ value. Then the final decision is computed according to the sign of the following equation
+
+$LO_{final} = LO{inicial} + LO{post}$ where the final decision is 1 if $LO{final}$ is positive or -1 otherwise. $LO{post}$ is computed as previously defined. 
+
+For this calculation, the function combines both dataframes, computes the final decision and returns:
+* The strengh combination: which are given as two separate columns
+* The initial decision: given by the `decision_ind` column of the first call to `trial_compute`.
+* The final log-odds: which are computed either by the previously mentioned method or by the original method [@Rollowage2021].
+
+```{r}
+two_sample_ind_fun <- function(sigma1, sigma2){
+  first_sample <- trial_compute(mu, sigma1) %>%
+    select(!confidence_ind)
+  second_sample <- trial_compute(mu, sigma2) %>%
+    select(x_ind, strength, log_odd_conf) %>% #For the calculations and the output we only need the following columns
+    rename( #We change the names of the columns to avoid names collisions with the first_sample dataframe
+      x2_ind = x_ind, 
+      strength2 = strength, 
+      log_odd_conf2 = log_odd_conf
+    ) 
+  second_sample <- second_sample %>%
+    mutate( #We compute the new log-odds using only the sign of the second sample information
+      log_odd_conf2bis = (2*mu*sign(x2_ind))/sigma2^2 
+      )
+
+  final_sample <- cbind(first_sample, second_sample)
+  
+  #Compute the final log-odds with both methods
+  final_sample <- final_sample %>% 
+    mutate(
+      final_log_odds_original = log_odd_conf + log_odd_conf2,
+      final_log_odds_alternative = log_odd_conf + log_odd_conf2bis
+    )
+  return(final_sample)
+}
+```
+
+We create a dataframe with the vectors combinations
+
+```{r}
+combination_sigmas <- expand.grid(
+  fixed_sigmas, fixed_sigmas
+)
+colnames(combination_sigmas) <- c('sigma1','sigma2')
+```
+
+We run the simulation
+
+```{r}
+two_sample_ind_performance <- pmap(
+  combination_sigmas,
+  two_sample_ind_fun
+) %>% bind_rows()
+```
+
+
+```{r}
+two_sample_summary <- two_sample_ind_performance %>% 
+  group_by(strength, strength2) %>%
+  summarise(
+    accuracy_original = mean(sign(final_log_odds_original)),
+    accuracy_alternative = mean(sign(final_log_odds_alternative)),
+    mean_log_original = mean(log_odd_conf2),
+    mean_log_alternative = mean(log_odd_conf2bis)
+  )
+```
+
+We first try to replicate the plot from Figure 1a. [@Rollwage2021]
+
+```{r}
+original_matrix <- two_sample_summary$accuracy_original %>% matrix(nrow = 10, ncol = 10)
+rownames(original_matrix) <- fixed_sigmas
+colnames(original_matrix) <- fixed_sigmas
+gplots::heatmap.2(original_matrix, dendrogram = 'none', col = 'heat.colors', symm = T, trace = 'none')
+ggplot(two_sample_summary, 
+       aes(x = strength, y = strength2, fill = accuracy_original - accuracy_alternative)) +
+  geom_tile()
+```
+

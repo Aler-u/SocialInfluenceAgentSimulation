@@ -11,7 +11,9 @@ output:
 
 # Simulation Summary
 
-This repository contains the code for an agent-based simulation of the relationship between individual metacognition and social information use (i.e. social influence).
+This repository contains the code for an agent-based simulation of the relationship between individual metacognition and social information use (i.e. social influence). We wanted to explore the consequences of different computational models of the weight given to social information when integrating opinions (i.e. information) coming from a varying number of people, all deciding upon the same issue.
+
+# Detailed Description
 
 Our simulation takes inspiration from the work by @Rollwage2021. The difference is that instead of modeling individual integration of secuential information, we model the integration of social and individual-specific information.
 
@@ -29,4 +31,6 @@ where $x_{ind}$ is a realization of the random variable $X_{ind}$, 1 represents 
 
 Confidence in the individual decision is estimated by the log-odds in favour of the chosen world state and using the logistic function the log-odds can be transformed into the probability of answering correctly [@Rollwage2021].
 
-After the initial decision, the agent receives additional information in the form of answers given by other agents modeled as previously described. Nonetheless, we can manipulate the other agent's accuracy by sampling sigma from a distribution. Thus, in the simplest case all agents have the same $\sigma^2$, which means that the precision of their information is the same. In another scenario, the precision of each agent depends upon a random process (modeled by an inverse gamma distribution) as $\sigma^2 \sim IG(\alpha,\beta)$ where the mean is fixed at 0.025. Since there are potentially infinite values of $\alpha$ and $\beta$ with the same mean, we vary over different combinations of parameters that satisfy the above condition. 
+After the initial decision, the agent receives additional information in the form of answers given by other agents modeled as previously described. Nonetheless, we can manipulate the other agent's accuracy by sampling sigma from a distribution. Thus, in the simplest case all agents have the same $\sigma^2$, which means that the precision of their information is the same. In another scenario, the precision of each agent depends upon a random process (modeled by an inverse gamma distribution) as $\sigma^2 \sim IG(\alpha,\beta)$ where the mean is fixed at 0.025. Since there are potentially infinite values of $\alpha$ and $\beta$ with the same mean, we vary over different combinations of parameters that satisfy the above condition.
+
+------------------------------------------------------------------------
