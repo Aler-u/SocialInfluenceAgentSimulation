@@ -27,12 +27,6 @@ $decision(x_{ind}) = \left\{\begin{array}{lr}1 & \text{if } x_{ind} \geq 0.5 \\ 
 
 where $x_{ind}$ is a realization of the random variable $X_{ind}$, 1 represents some arbitrary color and 0 represents its complement color.
 
-Confidence in the individual decision is estimated by the log-odds in favour of the chosen world state [@Rollwage2021] as
+Confidence in the individual decision is estimated by the log-odds in favour of the chosen world state and using the logistic function the log-odds can be transformed into the probability of answering correctly [@Rollwage2021].
 
-$LO_{ind}= \frac{2\mu X_{ind}}{\sigma^2}$ which may be, for example, $LO_i= \frac{2(0.48) X_{ind}}{0.025}$.
-
-Using the logistic function the log-odds can be transformed into the probability of answering correctly [@Rollwage2021]
-
-$confidence_{ind} = \frac{e^{LO_{ind}}}{1+e^{LO_{ind}}}$.
-
-After the initial decision, the agent receives additional information in the form of answers given by other agents modeled as previously described. Nonetheless, we can manipulate the other agent's accuracy by sampling sigma from a distribution. Thus, in the simplest case all agents have the same $\sigma^2$, which means that the precision $\lambda = \frac{1}{\sigma^2}$ of their information is the same. In another scenario, the precision of each agent depends upon a random process as $\sigma^2 \sim InvGamma(\alpha,\beta)$ where the mean is fixed and defined $\frac{\beta}{\alpha - 1}=0.025$. Since there are potentially
+After the initial decision, the agent receives additional information in the form of answers given by other agents modeled as previously described. Nonetheless, we can manipulate the other agent's accuracy by sampling sigma from a distribution. Thus, in the simplest case all agents have the same $\sigma^2$, which means that the precision of their information is the same. In another scenario, the precision of each agent depends upon a random process (modeled by an inverse gamma distribution) as $\sigma^2 \sim IG(\alpha,\beta)$ where the mean is fixed at 0.025. Since there are potentially infinite values of $\alpha$ and $\beta$ with the same mean, we vary over different combinations of parameters that satisfy the above condition. 
