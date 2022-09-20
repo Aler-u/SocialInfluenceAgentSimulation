@@ -1,7 +1,7 @@
 ---
 title: "Social Influence Model"
 output: html_document
-bibliography: SocialInfluenceSimulationbib.bib
+bibliography: "../SocialInfluenceSimulationbib.bib"
 biblio-style: "apalike"
 ---
 
@@ -10,6 +10,8 @@ library(tidyverse)
 library(ggridges)
 library(MASS)
 library(viridis)
+
+load("SimpleSocialResult.rda")
 ```
 
 # Background
@@ -73,7 +75,7 @@ roll_agent_sampler <- function(n_trials, mu_value, sigma_value){
 
 We now simulate 20000 trials for each individual $\sigma^2$ value.
 
-```{r}
+```{r, eval = FALSE}
 individual_performance <- map(
   sigmas,
   ~ roll_agent_sampler(2e3, roll_mu, .x)
@@ -110,6 +112,7 @@ We can also check the distribution of the agent confidence (as the probability o
 ) +
   geom_density_ridges()
 ```
+
 To test the calibration of the agent confidence we can binnarize the probability of being correct in intervals of .10 and compute the average accuracy for each case. 
 
 ```{r}
@@ -191,7 +194,7 @@ strength_weight_combination <- expand.grid(sigmas, others)
 
 We iterate over each combination and save the resulting dataframe in the `social_decision_weight` variable. 
 
-```{r}
+```{r, eval=FALSE}
 social_decision_weight <- pmap(
   strength_weight_combination,
   ~ social_influence_decision(10000, .y, 1, .x) %>%
@@ -202,7 +205,7 @@ save(social_decision_weight, file = 'SimpleSocialResult.rda')
 
 Now we iterate over different values of the social weight parameter. 
 
-```{r}
+```{r, eval=FALSE}
 final_decisions <- map(
   seq(0.1,1,0.1),
   ~ social_decision_weight %>% 
@@ -249,6 +252,7 @@ social_decision_weight %>%
   scale_fill_viridis() +
   xlab('Information strength') + ylab('Number of agents')
 ```
+
 Accuracy increases with both the number of agents and the information strength. Even with the lowest information strength, accuracy peaks at around 200 agents. For the lowest number of agents, the increase in accuracy is more gradual but still peaks at the higher information strength to a value near 1. 
 
 We can also plot the final social information value as the information strength and number of agents varies. 
@@ -314,7 +318,8 @@ social_decision_weight %>%
   geom_line() +
   geom_hline(yintercept = 0, linetype = 'dashed') +
   facet_wrap(~Difference, scales = "free_y") +
-  scale_x_log10()
+  scale_x_log10() +
+  scale_color_viridis(discrete = TRUE)
 ```
 
 It will be useful to calculate the frequency with which the agent changes its own decision and goes with the group decision. 
@@ -331,12 +336,13 @@ social_decision_weight %>%
     aes(x = factor(n_agents), y = strength, fill = mean_change)
   ) +
   geom_tile() +
-  coord_flip()
+  coord_flip() +
+  scale_fill_viridis()
 ```
 
 
 
-```{r}
+```{r, eval = FALSE}
 #Save the simulation results to continue withouth running the simulations all over again
 save(final_decisions, individual_performance, social_decision_weight, file = "SimpleSocialResult.rda")
 ```
