@@ -1,0 +1,366 @@
+---
+title: "Social Influence Model"
+output: html_document
+bibliography: SocialInfluenceSimulationbib.bib
+biblio-style: "apalike"
+---
+
+```{r}
+library(tidyverse)
+library(ggridges)
+library(MASS)
+library(viridis)
+```
+
+# Background
+
+We want to simulate an agent performing a binary perceptual decision task. Initially we follow @Rollwage2021 for the information sampling where the *i*th agent samples perceptual information ($X_i$) as given by a normal distribution $X_i \sim \mathcal{N}(\mu,\sigma^2_i)$. The value of $\mu$ is always fixed on the real world state (i.e. the perceptual stimulus) and thus lacks a subscript but the value of $\sigma^2$ varies according to the agent capability in the task. The agent then makes a decision based solely on this information $X_i$. The decision is defined by the sign of $X_i$ where $decision_i = 1$ if $X_i > 0$ or $decision_i = -1$ if $X_i < 0$.
+Each agent has a given confidence in its own decision. As a first approximation we can compute confidence as the log-odds ($LO_i$) in favor of the chosen world state [@Rollwage2021] given by $LO_i = \frac{2\mu X_i}{\sigma^2_i}$. We can transform $LO_i$ to reflect the probability of being correct which we will refer to as the agent confidence from now on, thus the *i*th agent confidence in their decision is given by the log-odds transformation $confidence_i = \frac{e^{LO_i}}{1+e^{LO_i}}$. This measure constitutes a noiseless confidence computed directly from the sampled information and reflects an agent with an optimal confidence. 
+
+After sampling information and computing confidence, the agent is exposed to social information in the form of frequencies of decisions made by other agents. The task for the agent afterwards is to integrate both sources of information, personal/individual and social. The information integration model from @Rollwage2021 cannot be used since the agent does not have access to the information sampled by the other agents nor the parameters governing the other agents sampling process. We instead rely on the model proposed by @Toyokawa2019 where we model the probability of the *i*th agent choosing the _m_ option. The original model states that the probability of individual _i_ of choosing the option _m_ at time _t_ is given by a weighted average defined by the following formula
+
+$P_{i.t}(m)=\sigma_{i,t} \times$ social influence<sub>i,m,t</sub>$+(1-\sigma_{i,t}) \times$ asocial influence<sub>i,m,t</sub>
+
+where $\sigma_{i,t}$ represents the weight given to social information by the _i_ individual at time _t_. Social influence<sub>i,m,t</sub> represents the amount of social information given by the frequencies associated with each option and is defined as Social influence<sub>i,m,t</sub>$=\frac{(F_{t-1}(m)+0.1)^\theta}{\Sigma_{k \in options}(F_{t-1}(k)+0.1)^\theta}$. That is because in the task performed by @Toyokawa2019 the participants could only see the decisions made by others in the preceding round and there were more than two options to choose from. Lastly asocial influence<sub>i,m,t</sub> represents the amount of individual information which was computed using a standard reinforcement learning with ‘softmax’ choice rule where participants update the estimated average reward of a given option according to the Rescorla–Wagner rule. We choose to avoid expressing the formula that defines asocial influence for simplicity since we are trying to simulate a different type of task and have already defined the way our agent samples individual information. 
+
+We tweak the aforementioned model to our use case. For clarity sake we modify the notation of what @Toyokawa2019 calls the social learning weight $\sigma$. Since for our purposes $\sigma$ represents the standard deviation of the normal distribution that governs the agents information sampling process, we instead employ the greek letter $\alpha$ to indicate the weight given to social information. Furthermore, we incorporate several definitions of $\alpha$ in our model. As a simple and first approach we explore different levels of alpha $[0, 0.9]$ in intervals of 0.1. On one end when $\alpha = 0$ the agent completely ignores it's own decision and relies entirely on social information, choosing the option with the highest frequency. On the other end when $\alpha = 0.9$ the agent pays very little attention to social information and weights heavily its own information. As a second approach we model $\alpha$ to be exactly equal to the agent confidence (as the probability of being correct).  
+We will call what @Toyokawa2019 calls the asocial influence, the individual information and represent it as $A$. We define $A$ in terms of $X_i$ but since we need to deal with probabilities we will transform $X_i$ to $A = \frac{e^{X_i}}{1+e^{X_i}}$. 
+Social influence will be defined as $S$ and we use the same formula as @Toyokawa with $\theta$ fixed at 1 and eliminating the $+ 0.1$ term. As a result we have simply that $S$ is the relative frequency of option _m_. Since we deal with a binary decision task we can drop the reference to the option _m_ ($S$ instead of $S(m)$) since given one frequency the other is completely determined by its complement. When computing $S$ in this way the total number of agents does not modify in any way the social influence strength since 7 out of 10 will give the same result as 700 out of 1000. 
+
+The final integration model will then be
+
+$P = (1-\alpha) \times S(m) + \alpha \times A$
+
+where $P$ equals the probability to decide for option 1. The final decision $decision_{final}$ can be conceptualized as a deterministic process where $decision_{final} = 1$ if $P > 0.5$ and $decision_{final} = -1$ otherwise or as a random process given by a Binomial $decision_{final} \sim Bin(1,p)$ where $p=P=(1-\alpha) \times S(m) + \alpha \times A$.  
+
+Instead of defining $\sigma^2$ directly we specify different levels of information strengths $[0.3-1.2]$ given by $\frac{\mu}{\sigma}$ [@Rollwage2021] and given that we fixed $\mu$ to be 1 this would be equivalent to $\frac{1}{\sigma}$ which similar to the reliability metric defined by @Toelch2015. In this way, we can assess the impact of different levels of information reliability independent of the specific values of $\mu$ and $\sigma^2$.
+
+Since in `R` we define the normal distribution in terms of its standard deviation ($\sigma$), we can compute the appropriate standard deviation that defines the distribution with the appropriate strength level by using this simple calculation $\frac{1}{\frac{1}{\sigma}}$ which is basically $strength^{-1}$. 
+
+
+```{r}
+roll_mu <- 1 #We call it roll in reference to the author Rollwage
+strength_levels <- seq(0.3,1.2,0.1)
+sigmas <- roll_mu/strength_levels #Calculate the appropiate standard deviations
+```
+
+To provide the agent with social influence we need to determine how many people will also be participating, for exploration purposes we used an interval ranging from 5 to 10000. 
+
+```{r}
+others <- c(5,10,20,50,100,200,500,1000,5000,10000)
+```
+
+Now we construct a function to mimic the sampling of information in sequential trials. The function takes as arguments a $\mu$ and $sigma$ value along with a parameter `n_trials` to define the number of trials to simulate. It returns several values. First of all the function returns the $X_i$ value as it was previously defined. Second it returns the decision taken by the ith agent which is defined by $X_i$, if $X_i > 0$ then $decision =1$, otherwise ($X_i < 0$) $decision = -1$. Thirdly, we compute the log odds in favour of the chosen world state [@Rollwage2021] defined as $LO = \frac{2\mu X_i}{\sigma^2_i}$. Finally the function calculates and returns the probability of being correct for the agent ($confidence$) which is the transformed log odds given by $confidence = \frac{e^{LO}}{(1+e^{LO})} $. The function also returns the information strength for that individual trial. Each of these outputs is given as a column in the resulting dataframe.
+
+```{r}
+roll_agent_sampler <- function(n_trials, mu_value, sigma_value){
+  x_ind <- rnorm(n_trials, mu_value, sigma_value)
+  decisions_ind <- ifelse(x_ind > 0, 1, -1)
+  log_odds_ind <- (2*mu_value*x_ind)/(sigma_value^2)
+  confidence_ind <- exp(log_odds_ind)/(1+exp(log_odds_ind))
+  res_df <- data.frame(
+    X = x_ind,
+    decision = decisions_ind,
+    logodds = log_odds_ind,
+    prob_correct = confidence_ind,
+    strength = mu_value/sigma_value
+  )
+  return(res_df)
+}
+```
+
+# Individual simulation
+
+We now simulate 20000 trials for each individual $\sigma^2$ value.
+
+```{r}
+individual_performance <- map(
+  sigmas,
+  ~ roll_agent_sampler(2e3, roll_mu, .x)
+) %>%
+  bind_rows()
+```
+
+We compute the accuracy of each decision which, since $\mu = 1$ according to the real world state is equivalent to check if the agent decision is equal to 1. 
+
+```{r}
+individual_performance <- individual_performance %>%
+  mutate(accuracy = as.numeric(decision == 1))
+```
+
+## Results
+
+Now we can calculate how the mean accuracy changes as a function of information strength. 
+
+```{r}
+individual_performance %>% group_by(strength) %>% 
+  summarise(
+    mean_acc = mean(accuracy)
+            )
+```
+
+As expected the accuracy increases with information strength, that is with lower $\sigma^2$ values.
+
+We can also check the distribution of the agent confidence (as the probability of being correct) by each strength level. 
+
+```{r}
+  ggplot(
+  data = individual_performance,
+  aes(x = prob_correct, y = factor(strength))
+) +
+  geom_density_ridges()
+```
+To test the calibration of the agent confidence we can binnarize the probability of being correct in intervals of .10 and compute the average accuracy for each case. 
+
+```{r}
+individual_performance %>% 
+  mutate(
+    prob_correct = as.numeric(substr(prob_correct, start = 1, 3))
+         ) %>%
+  group_by(prob_correct) %>%
+  summarise(mean_accuracy = mean(accuracy)) %>%
+  ggplot(
+    aes(x = prob_correct,
+    y = mean_accuracy)
+  ) +
+  geom_line()
+```
+
+
+# Social influence simulation
+
+Now we create a function to perform the trials that have social influence. The function takes the following arguments:
+
+* `n_trials` = The number of trials to simulate for one combination of parameters. It is 2000 by default.
+* `n_people` = The number of agents exerting influence.
+* `mu_value` = The parameter $\mu$ that drives the sampling of individual information.
+* `sigma_value` = The parameter $\sigma$ that determines the information strength. 
+
+```{r}
+social_influence_decision <- function(n_trials = 2000, n_people, mu_value, sigma_value){
+  #The agent performs their individual information sampling
+  agent_decisions <- roll_agent_sampler(n_trials, mu_value, sigma_value)
+  
+  #The other n agents perform their decisions
+  others_decisions <- replicate(
+   n_trials, #We perform the same number of decisions as the agent
+   roll_agent_sampler(n_people, mu_value, sigma_value) %>% #Create each decision
+    mutate(
+      decision = factor(decision, levels = c(1,-1)) #Transform the decision column in a factor an define both levels
+      ) %>% 
+    count(decision, .drop = FALSE) %>% #We count how many agents decided for each option including 0 count values
+    mutate(
+      relative = n/sum(n)
+      ), #Compute the relative frequency
+   simplify = FALSE #Get the results as a list of dataframes
+  ) %>%
+  bind_rows() %>% #Bind all the dataframes into one
+  mutate(decision = ifelse(decision == 1, 'a','b'), #Modify the decision name from a number to a name
+         id = rep(seq(1,n_trials),each = 2) #Create an id to identify each trial
+         ) %>% 
+  pivot_wider(id_cols = id, names_from = decision, values_from = relative) #Get the dataframe into wide format
+  
+  #Add the two dataframes together and use this as output
+  cbind(agent_decisions, others_decisions) %>% dplyr::select(!id)
+}
+```
+
+We need to also generate the functions to calculate the final decision value $P$. This function takes as input:
+
+* `individual_information` = The raw $X_i$ value 
+* `option_a` = The relative frequency of people selecting the optimal choice
+* `social_weight` = The social information weight (from 0 to 1)
+
+It returns a single value which the final information integration.
+
+```{r}
+final_decision <- function(individual_information, option_a, social_weight){
+  transformed_ind <- exp(individual_information)/(1+exp(individual_information)) #Transformation of X
+  
+  social_information <- (1-social_weight)*option_a #Calculate social information value
+  
+  social_information+(social_weight*transformed_ind) #Compute and return the final information integration (calculation of asocial information is implicit)
+}
+```
+
+To run the simulation we contemplate all the combinations of information strength values and the number of people. 
+
+```{r}
+strength_weight_combination <- expand.grid(sigmas, others)
+```
+
+We iterate over each combination and save the resulting dataframe in the `social_decision_weight` variable. 
+
+```{r}
+social_decision_weight <- pmap(
+  strength_weight_combination,
+  ~ social_influence_decision(10000, .y, 1, .x) %>%
+    mutate(n_agents = .y)
+) %>% bind_rows()
+save(social_decision_weight, file = 'SimpleSocialResult.rda')
+```
+
+Now we iterate over different values of the social weight parameter. 
+
+```{r}
+final_decisions <- map(
+  seq(0.1,1,0.1),
+  ~ social_decision_weight %>% 
+    mutate(
+      weight = .x,
+      trans_X = exp(X)/(1+exp(X)),
+      weight_P = (.x*a)+((1-.x)*trans_X),
+      conf_P = ((1-prob_correct)*a)+(prob_correct*trans_X),
+      deterministic_weight = ifelse(weight_P > 0.5, 1, 0),
+      deterministic_conf = ifelse(conf_P > 0.5, 1, 0),
+      prob_weight = rbinom(1,1, weight_P),
+      prob_conf = rbinom(1,1,conf_P)
+    )
+) %>% bind_rows()
+```
+
+We compute the transformed value of $X_i$ that will be used in the information integration equation previously described. We also compute the value of the information integration (`conf_P`) using agent confidence as the weighting value and with that value calculate the final decision in deterministic and probabilistic terms. The `final_decision` function computes this same value (`conf_P`) but does not return the specific ingredients used in its calculation so we re-implement them here to check the specific values of each component.
+
+```{r}
+social_decision_weight <- social_decision_weight %>%
+  mutate(
+      trans_X = exp(X)/(1+exp(X)),
+      asocial_info = prob_correct*trans_X,
+      social_info = (1-prob_correct)*a,
+      conf_P = social_info + asocial_info,
+      deterministic_conf = ifelse(conf_P > 0.5, 1, 0),
+      prob_conf = rbinom(1,1,conf_P)
+  )
+```
+
+## Results
+
+First we check how accuracy changes with the value of $\sigma^2$ and the number of agents.
+
+```{r}
+social_decision_weight %>%
+  mutate(group_accuracy = ifelse(a > 0.5, 1, 0)) %>%
+  group_by(n_agents, strength) %>%
+  summarise(mean_acc = mean(group_accuracy)) %>%
+  ggplot(
+    aes(x = strength, y = factor(n_agents), fill = mean_acc)
+  ) +
+  geom_tile() +
+  scale_fill_viridis() +
+  xlab('Information strength') + ylab('Number of agents')
+```
+Accuracy increases with both the number of agents and the information strength. Even with the lowest information strength, accuracy peaks at around 200 agents. For the lowest number of agents, the increase in accuracy is more gradual but still peaks at the higher information strength to a value near 1. 
+
+We can also plot the final social information value as the information strength and number of agents varies. 
+
+```{r}
+social_decision_weight %>%
+  group_by(strength, n_agents) %>%
+  summarise(mean_social = mean(social_info)) %>%
+  ggplot(
+    aes(x = strength, y = factor(n_agents), fill = mean_social)
+  ) +
+  geom_tile() +
+  scale_fill_viridis()
+```
+
+
+We can now calculate the mean accuracy of the final decision by the number of agents and the strength of information.
+
+```{r}
+social_decision_weight %>%
+  group_by(strength, n_agents) %>%
+  summarise(mean_acc = mean(deterministic_conf == 1)) %>%
+  ggplot(
+    aes(x = strength, y = factor(n_agents), fill = mean_acc)
+  ) +
+  geom_tile() +
+  scale_fill_viridis()
+```
+
+Independent of the number of agents, as the information strength increases the mean accuracy of the response also increases. However when the information strength is fixed, the dynamics as the number of agents increaes differ depending on the specific information strength. 
+
+To better assess this dynamics we can plot the same information but using lines to reflect the accuracy change.  
+
+```{r}
+social_decision_weight %>%
+  group_by(strength, n_agents) %>%
+  summarise(mean_acc = mean(deterministic_conf == 1)) %>%
+  ggplot(
+    aes(x = n_agents, y = mean_acc, color = factor(strength))
+  ) +
+  geom_line() +
+  scale_x_log10() +
+  theme_classic() +
+  scale_color_viridis(discrete = TRUE) +
+  xlab('Number of agents') + ylab('Mean Accuracy')
+```
+
+Furthermore we can compute the mean difference in the accuracy of the final response compared to the individual response and the group response. 
+
+```{r}
+social_decision_weight %>%
+  group_by(strength, n_agents) %>%
+  summarise(mean_final_acc = mean(deterministic_conf == 1),
+            mean_ind_acc = mean(decision == 1),
+            mean_group_acc = mean(a > 0.5)) %>%
+  mutate(ind_diff = mean_final_acc - mean_ind_acc,
+         group_diff = mean_final_acc - mean_group_acc) %>%
+  dplyr::select(strength, n_agents, ind_diff, group_diff) %>%
+  pivot_longer(cols = c(ind_diff, group_diff), names_to = 'Difference') %>%
+  ggplot(
+    aes(y = value, x = n_agents, color = factor(strength))
+  ) +
+  geom_line() +
+  geom_hline(yintercept = 0, linetype = 'dashed') +
+  facet_wrap(~Difference, scales = "free_y") +
+  scale_x_log10()
+```
+
+It will be useful to calculate the frequency with which the agent changes its own decision and goes with the group decision. 
+
+```{r}
+social_decision_weight %>%
+  mutate(
+      decision = ifelse(decision == 1, 1, 0),
+      change = ifelse(decision == deterministic_conf, 0, 1)
+  ) %>%
+  group_by(strength, n_agents) %>%
+  summarise(mean_change = mean(change)) %>%
+  ggplot(
+    aes(x = factor(n_agents), y = strength, fill = mean_change)
+  ) +
+  geom_tile() +
+  coord_flip()
+```
+
+
+
+```{r}
+#Save the simulation results to continue withouth running the simulations all over again
+save(final_decisions, individual_performance, social_decision_weight, file = "SimpleSocialResult.rda")
+```
+
+# Metacognitive agent
+
+We create a function to replicate the metacognitive agent described by @Rollwage2021. 
+
+```{r}
+metacog_agent_sampler <- function(n_trials, mu_value, inf_sigma, conf_sigma, rho){
+  mu_values <- rep(mu_value, 2)
+  sigma_matrix <- matrix(
+    inf_sigma^2, #variance of the individual information sample
+    rho*inf_sigma*conf_sigma, #correlation between information and confidence
+    rho*inf_sigma*conf_sigma,
+    conf_sigma^2 #variance of the confidence estimate
+  )
+  x_samples <- mvrnorm(n_trials, mu_values, sigma_matrix)
+}
+```
+
+
+
+
+
+
+
