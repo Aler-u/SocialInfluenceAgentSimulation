@@ -78,7 +78,7 @@ We now simulate 20000 trials for each individual $\sigma^2$ value.
 ```{r, eval = FALSE}
 individual_performance <- map(
   sigmas,
-  ~ roll_agent_sampler(2e3, roll_mu, .x)
+  ~ roll_agent_sampler(100000, roll_mu, .x)
 ) %>%
   bind_rows()
 ```
@@ -108,7 +108,7 @@ We can also check the distribution of the agent confidence (as the probability o
 ```{r}
   ggplot(
   data = individual_performance,
-  aes(x = prob_correct, y = factor(strength))
+  aes(x = prob_correct, y = factor(strength), fill = factor(decision))
 ) +
   geom_density_ridges()
 ```
@@ -211,7 +211,7 @@ final_decisions <- map(
   ~ social_decision_weight %>% 
     mutate(
       weight = .x,
-      trans_X = exp(X)/(1+exp(X)),
+      trans_X = prob_correct,
       weight_P = (.x*a)+((1-.x)*trans_X),
       conf_P = ((1-prob_correct)*a)+(prob_correct*trans_X),
       deterministic_weight = ifelse(weight_P > 0.5, 1, 0),
@@ -227,7 +227,7 @@ We compute the transformed value of $X_i$ that will be used in the information i
 ```{r}
 social_decision_weight <- social_decision_weight %>%
   mutate(
-      trans_X = exp(X)/(1+exp(X)),
+      trans_X = prob_correct,
       asocial_info = prob_correct*trans_X,
       social_info = (1-prob_correct)*a,
       conf_P = social_info + asocial_info,
@@ -238,7 +238,38 @@ social_decision_weight <- social_decision_weight %>%
 
 ## Results
 
-First we check how accuracy changes with the value of $\sigma^2$ and the number of agents.
+```{r}
+final_decisions %>% group_by(n_agents, weight, strength) %>%
+  summarise(mean_acc = mean(deterministic_weight)) %>%
+  ggplot(
+    aes(x = strength,
+        y = weight,
+        fill = mean_acc)
+  ) +
+  geom_tile() +
+  facet_wrap(~n_agents) +
+  scale_fill_viridis()
+```
+
+```{r}
+final_decisions %>% group_by(n_agents, weight, strength) %>%
+  summarise(mean_acc = mean(deterministic_weight)) %>%
+  ungroup() %>%
+  group_by(n_agents, strength) %>%
+  filter(mean_acc == max(mean_acc)) %>%
+  arrange(n_agents, strength) %>% 
+  ggplot(
+    aes(x = strength,
+        y = factor(n_agents),
+        fill = weight)
+  ) +
+  geom_tile() +
+  scale_fill_viridis()
+```
+
+
+
+First we check how group accuracy changes with the value of $\sigma^2$ and the number of agents.
 
 ```{r}
 social_decision_weight %>%
@@ -319,7 +350,8 @@ social_decision_weight %>%
   geom_hline(yintercept = 0, linetype = 'dashed') +
   facet_wrap(~Difference, scales = "free_y") +
   scale_x_log10() +
-  scale_color_viridis(discrete = TRUE)
+  scale_color_viridis(discrete = TRUE) +
+  theme_classic()
 ```
 
 It will be useful to calculate the frequency with which the agent changes its own decision and goes with the group decision. 
@@ -340,6 +372,26 @@ social_decision_weight %>%
   scale_fill_viridis()
 ```
 
+```{r}
+social_decision_weight %>%
+  mutate(
+      decision = ifelse(decision == 1, 1, 0),
+      change = ifelse(decision == deterministic_conf, 0, 1)
+  ) %>%
+  group_by(strength, n_agents) %>%
+  summarise(mean_change = mean(change)) %>%
+  ggplot(
+    aes(
+      x = strength,
+      y = mean_change,
+      color = factor(n_agents)
+    )
+  ) +
+  geom_line() +
+  scale_color_viridis(discrete = TRUE) +
+  theme_classic()
+```
+
 
 
 ```{r, eval = FALSE}
@@ -351,17 +403,555 @@ save(final_decisions, individual_performance, social_decision_weight, file = "Si
 
 We create a function to replicate the metacognitive agent described by @Rollwage2021. 
 
+The function takes the following inputs:
+
+* n_trials: The amount of trials for each individual agent to perform 
+* mu_value: A single number indicating the mean value of the normal multivariate distribution. This value will be copied to conform the vector of lenth two representing the mean for all the dimensions of the normal multivariate distribution, thus the mean value cannot vary independently over each dimension.
+* inf_sigma: The value of $\sigma_{act}$ representing the noise in the individual (perceptual) information. 
+* conf_sigma: The value of $\sigma_{conf}$ representing the noise in the individual confidence estimate. 
+* rho: The value of $\rho$ representing the amount of correlation between the two dimensions (individual information and confidence estimate) of the bivariate normal distribution. This number multiplies both $\sigma$ values in the off-diagonal of the covariance matrix. 
+
+
+
 ```{r}
-metacog_agent_sampler <- function(n_trials, mu_value, inf_sigma, conf_sigma, rho){
+metacog_agent_sampler <- function(n_trials, mu_value, inf_sigma, conf_sigma, rho, metacog, strength = 0.8){
   mu_values <- rep(mu_value, 2)
   sigma_matrix <- matrix(
+    c(
     inf_sigma^2, #variance of the individual information sample
     rho*inf_sigma*conf_sigma, #correlation between information and confidence
-    rho*inf_sigma*conf_sigma,
-    conf_sigma^2 #variance of the confidence estimate
+    rho*inf_sigma*conf_sigma, #idem
+    conf_sigma^2), #variance of the confidence estimate
+    2,
+    2
   )
   x_samples <- mvrnorm(n_trials, mu_values, sigma_matrix)
+  data.frame(x_inf = x_samples[,1],
+             x_conf = x_samples[,2],
+             inf_sigma = inf_sigma,
+             conf_sigma = conf_sigma,
+             rho = rho,
+             coeficiente = conf_sigma/inf_sigma,
+             metacog = metacog,
+             decision = ifelse(x_samples[,1] > 0, 1, -1),
+             strength = strength,
+             true_value = mu_value
+             )
 }
+```
+
+Following @Rollwage2021 we create a function to define meta-d/d ratio values from 0.4 to 1.4. The function also takes as input a strength level present in the vector `strength_levels` to match the appropiate $\sigma$ values. 
+
+```{r}
+metacognitive_values_definition <- function(information_strength){
+  metacog_strength <- sigmas[which(abs(strength_levels - information_strength) < 0.1e-10)]
+  different_sigmas <- expand.grid(
+    metacog_strength, 
+    c(2.04, 1.54, 1.23)
+    ) %>% 
+    mutate(conf_sigma = Var1*Var2, rho = 0.8,
+           metacog = c(0.4,0.6,0.8)) %>%
+    rename(inf_sigma = Var1, 
+           coefficients = Var2)
+  different_rho <- expand.grid(
+    c(0.1,0.3,0.5,0.65),
+    metacog_strength
+    ) %>%
+    rename(rho = Var1,
+           inf_sigma = Var2
+    ) %>%
+    mutate(conf_sigma = inf_sigma,
+           coefficients = 1,
+           metacog = c(1.4, 1.3, 1.2, 1.1))
+  fixed_ratio <- data.frame(
+    rho = 1,
+    coefficients = 1,
+    inf_sigma = metacog_strength,
+    conf_sigma = metacog_strength,
+    metacog = 1
+  )
+  final_values <- rbind(
+    different_rho, different_sigmas, fixed_ratio
+  )
+  return(final_values)
+}
+```
+
+
+To explore the behavior of each type of agent we employ three different levels of information strength. 
+
+
+```{r}
+strength_comparison <- c(0.3,0.6,0.9)
+metacoginitive_values_test <- lapply(
+  strength_comparison,
+  function(x) metacognitive_values_definition(x) %>% mutate(strength = x)
+) %>% bind_rows()
+```
+
+
+We now iterate over each combination of values computing 10 thousand trials for each. 
+
+
+```{r}
+metacog_test <- pmap(metacoginitive_values_test,
+     ~ metacog_agent_sampler(10000, 1, ..2, ..3, ..1, ..5, ..6)
+     ) %>%
+  bind_rows() %>%
+  mutate(accuracy = ifelse(decision == true_value, 1, 0))
+```
+
+We compare overall performance across each agent and expect to see the same level of accuracy.
+
+```{r}
+metacog_test %>%
+  group_by(metacog, strength) %>%
+  summarise(mean_acc = mean(accuracy)) %>%
+  ggplot(
+    aes(x = factor(metacog), y = mean_acc, fill = factor(strength))
+  ) +
+  geom_col(position = 'dodge') +
+  scale_fill_viridis(discrete = TRUE)
+```
+
+We create a function to compute the confidence of each agent in its decision.
+
+
+```{r}
+confidence_calculation <- function(x_conf, x_act, sigma_act, sigma_conf, rho){
+  posible_d <- c(-1,1)
+  numerator <- rep(NA,2)
+  a <- ifelse(x_act > 0, 1, -1)
+  indice <- 1
+  for(d in posible_d){
+    mu_second_term <- d + (sigma_act/sigma_conf)*rho*(x_conf - d)
+    sigma_second_term <- sqrt((1-rho^2)*sigma_act^2)
+    if(a == 1){
+      second_term <- 1-pnorm(0, mu_second_term, sigma_second_term) 
+    }
+    else{
+      second_term <- pnorm(0, mu_second_term, sigma_second_term)
+    }
+    first_term <- dnorm(x_conf, d, sigma_conf)
+    numerator[indice] <- first_term*second_term
+    indice <- indice + 1
+  }
+  if(a == 1){
+    return(numerator[2]/sum(numerator))
+  }
+  else{
+    return(numerator[1]/sum(numerator))
+  }
+}
+```
+
+
+We calculate each agents confidence.
+
+```{r}
+metacog_test$confidence <-  metacog_test %>%
+  pmap(
+    ~ confidence_calculation(..2, ..1, ..3, ..4, ..5)
+  ) %>% unlist()
+```
+
+With confidence already computed we can compare the confidence score distribution by decision type (either 1 or -1) for each meta-d/d ratio and information strength combination.
+
+```{r}
+metacog_test %>%
+  ggplot(
+    aes(x = confidence, y = factor(metacog), fill = factor(decision))
+  ) +
+  geom_density_ridges(stat = "binline") + 
+  facet_wrap(~factor(strength)) +
+  geom_vline(xintercept = 0.5, linetype = 'dashed') +
+  theme_classic() +  theme(legend.position = 'bottom') +
+  xlab("Confidence") + ylab("Metacognitive efficiency (meta-d'/d')") + scale_fill_discrete('Decision')
+ggsave("test.png")
+```
+
+
+## Results
+
+The meta-d/d ratio of the agent with values of $\rho = 1$ and $\sigma_{act}=\sigma_{conf}$ should be 1. The same as the optimal agent that calculates confidence directly from $X_{act}$. However, confidence is calculated using two different approaches in each case. 
+
+We should then compare the metrics for both agents with the two different methods. First of all we integrate their results into a single dataframe.
+
+```{r}
+optimal_agents_comparison <- rbind(
+  #First Dataframe
+  metacog_test %>% 
+    filter(metacog == 1) %>% 
+    dplyr::select(confidence, new_confidence, decision, strength) %>% 
+    mutate(unbiased = 0),
+  #Second Dataframe
+  individual_performance %>% 
+    filter(
+      near(strength, strength_comparison)
+    ) %>% 
+    group_by(strength) %>%
+    slice_sample(n = 10000) %>%
+    ungroup() %>%
+    dplyr::select(decision, prob_correct, strength) %>%
+    mutate(new_confidence = prob_correct,
+           unbiased = 1) %>%
+    rename(confidence = prob_correct)
+  )
+```
+
+First we start by comparing the distributions of confidence values
+
+```{r}
+ggplot(
+  optimal_agents_comparison,
+  aes(x = confidence, y = factor(strength), color = factor(decision))
+) +
+  geom_density_ridges(stat = 'binline', fill = 'white', alpha = 0.5) +
+  facet_wrap(~unbiased) +
+  theme_classic()
+```
+
+
+
+Then we compare the average performance between the two
+
+```{r}
+ggplot(
+  optimal_agents_comparison,
+  aes(x = factor(unbiased), y = accuracy)
+) +
+  stat_summary(geom = 'col') +
+  scale_y_continuous(limits = c(0,1))
+```
+
+
+```{r}
+metacog_test %>%
+  pivot_longer(cols = c(confidence, new_confidence)) %>%
+  ggplot(
+    aes(x = value, y = factor(metacog), fill = name)
+  ) +
+  geom_density_ridges(alpha = 0.5)
+```
+
+
+
+```{r, warning=FALSE}
+metacog_test %>%
+  pivot_longer(cols = c(confidence, new_confidence)) %>%
+  ggplot(
+    aes(y = accuracy, x = value, color = factor(metacog))
+  ) +
+  geom_smooth(method = 'glm', method.args = list(family = "binomial"), 
+    se = FALSE) +
+  scale_color_viridis(discrete = TRUE) +
+  facet_wrap(~name)
+```
+
+```{r}
+metacog_test %>%
+  ggplot(
+    aes(y = decision, x = confidence, color = factor(metacog))
+  ) +
+  geom_smooth() +
+  scale_color_viridis(discrete = TRUE)
+```
+
+
+
+```{r}
+metacog_test %>%
+  ggplot(
+    aes(x = x_inf, y = x_conf)
+  ) +
+  geom_density2d() +
+  facet_wrap(~metacog)
+```
+
+
+
+```{r}
+metacog_test %>%
+  ggplot(
+    aes(x = factor(metacog), y = accuracy)
+  ) +
+  stat_summary(geom = 'pointrange')
+```
+
+
+# Metacognitive agents with social information
+
+```{r}
+load("SocialInfluenceMetacognition.rda")
+```
+
+The idea behind this simulation is that we need to generate a trial from a metacognitive agent using the `metacog_agent_sampler` function. In that same "trial" we generate a decision from other agents using the `roll_agent_sampler` function. 
+
+We wrap this whole process inside a function called `metacog_social_influence_decision`. This function is similar to the `social_influence_decision` function but changes the individual agent function.
+
+```{r}
+metacog_social_influence_decision <- function(n_trials, mu_value, inf_sigma, conf_sigma, rho, metacog, n_people){
+  
+  #The agent performs their individual information sampling
+  agent_decisions <- metacog_agent_sampler(n_trials, mu_value, inf_sigma, conf_sigma, rho, metacog)
+  
+  #The other n agents perform their decisions
+  others_decisions <- replicate(
+   n_trials, #We perform the same number of decisions as the agent
+   roll_agent_sampler(n_people, mu_value, inf_sigma) %>% #Create each decision
+    mutate(
+      decision = factor(decision, levels = c(1,-1)) #Transform the decision column in a factor an define both levels
+      ) %>% 
+    count(decision, .drop = FALSE) %>% #We count how many agents decided for each option including 0 count values
+    mutate(
+      relative = n/sum(n)
+      ), #Compute the relative frequency
+   simplify = FALSE #Get the results as a list of dataframes
+  ) %>%
+  bind_rows() %>% #Bind all the dataframes into one
+  mutate(decision = ifelse(decision == 1, 'a','b'), #Modify the decision name from a number to a name
+         id = rep(seq(1,n_trials),each = 2) #Create an id to identify each trial
+         ) %>% 
+  pivot_wider(id_cols = id, names_from = decision, values_from = relative) #Get the dataframe into wide format
+  
+  #Add the two dataframes together and use this as output
+  return(cbind(agent_decisions, others_decisions) %>% dplyr::select(!id))
+}
+```
+
+We need to repeat the rows from the `metacognitive_values` dataframe to accomodate the 10 different levels of agents introducing social information. Once done we add a new column called `n_agents` with a value corresponding to the number of people providing social influence in each parameter combination.
+
+```{r}
+metacognitive_values <- metacognitive_values_definition(0.3)
+metacognitive_values <- metacoginitive_values_test %>% slice(rep(1:nrow(metacognitive_values), each = 10))
+metacognitive_values <- metacognitive_values %>% mutate(
+  n_agents = rep(others, 24)
+)
+```
+
+We run the simulation using 4 cores and save the final result. 
+
+```{r}
+# library(furrr)
+# plan(multisession(workers = 4))
+# test <- furrr::future_pmap(
+#   metacognitive_values,
+#   ~ metacog_social_influence_decision(10000, 1, ..2, ..3, ..1, ..5, ..6) %>%
+#     mutate(n_agents = ..6),
+#   .progress = TRUE,
+#   seed = TRUE
+# ) %>% bind_rows()
+test <- pmap(
+  metacognitive_values %>% dplyr::select(!strength),
+  ~ metacog_social_influence_decision(5000, 1, ..2, ..3, ..1, ..5, ..6) %>%
+    mutate(n_agents = ..6)
+) %>% bind_rows()
+save(test, file = "SocialInfluenceMetacognition3.rda")
+```
+
+Calculate confidence for each agent used in the simulation
+
+```{r}
+test$confidence <-  test %>%
+  pmap(
+    ~ confidence_calculation(..2, ..1, ..3, ..4, ..5)
+  ) %>% unlist()
+```
+
+Compute all the elements neccesary for the final decision of each agent. 
+
+```{r}
+test <- test %>% 
+  mutate(
+      trans_X = exp(x_inf)/(1+exp(x_inf)),
+      asocial_info = confidence*trans_X,
+      social_info = (1-confidence)*a,
+      conf_P = social_info + asocial_info,
+      deterministic_conf = ifelse(conf_P > 0.5, 1, -1),
+      prob_conf = rbinom(1,1,conf_P),
+      ind_accuracy = ifelse(decision == 1, 1, 0),
+      group_accuracy = ifelse(a > 0.5, 1, 0),
+      final_accuracy = ifelse(deterministic_conf == 1, 1, 0)
+  )
+
+```
+
+```{r}
+test2 <- left_join(
+  test %>% dplyr::select(!strength),
+  metacognitive_values %>% dplyr::select(inf_sigma, conf_sigma, strength) %>% distinct(.keep_all = T),
+  by = c('inf_sigma','conf_sigma')
+)
+```
+
+
+```{r}
+test2 <- test2 %>%
+  mutate(
+      new_a = new_frequency_function(a, n_agents),
+      trans_X = exp(x_inf)/(1+exp(x_inf)),
+      asocial_info = confidence*trans_X,
+      social_info = (1-confidence)*new_a,
+      conf_P = social_info + asocial_info,
+      deterministic_conf = ifelse(conf_P > 0.5, 1, -1),
+      prob_conf = rbinom(1,1,conf_P),
+      ind_accuracy = ifelse(decision == 1, 1, 0),
+      group_accuracy = ifelse(a > 0.5, 1, 0),
+      final_accuracy = ifelse(deterministic_conf == 1, 1, 0)
+  )
+```
+
+
+Compare average accuracy values for each metacognitive efficiency parameter value
+
+```{r}
+test2 %>% group_by(metacog, strength) %>%
+  summarise(mean_final_acc = mean(ind_accuracy))
+```
+
+
+
+```{r}
+test2 %>% group_by(metacog, n_agents, strength) %>%
+  summarise(mean_final_acc = mean(final_accuracy)) %>%
+  ggplot(
+    aes(x = factor(n_agents), y = factor(metacog), fill = mean_final_acc)
+  ) +
+  geom_tile() +
+  scale_fill_viridis() +
+  facet_wrap(~strength)
+```
+
+```{r}
+left_join(
+  test2 %>% group_by(metacog, n_agents, strength) %>%
+  summarise(mean_final_acc = mean(final_accuracy)),
+  test2 %>% group_by(strength) %>% summarise(mean_ind = mean(ind_accuracy)),
+  by = c('strength')
+) %>%
+  ggplot(
+    aes(x = n_agents, y = mean_final_acc)
+  ) +
+  geom_line(aes(color = factor(metacog))) +
+  geom_hline(aes(yintercept = mean_ind), linetype = 'dashed') +
+  geom_line(
+    data = test %>% group_by(n_agents) %>% summarise(mean_group = mean(group_accuracy)),
+    aes(x = n_agents, y = mean_group), color = 'black'
+  ) +
+  scale_color_viridis(discrete = TRUE) +
+  scale_x_log10() +
+  facet_wrap(~strength)
+```
+
+```{r}
+test2 %>% group_by(metacog, n_agents, strength) %>%
+  summarise(mean_social = mean(social_info)) %>%
+  ggplot(
+    aes(y = factor(metacog), x = factor(n_agents), fill = mean_social)
+  ) + 
+  geom_tile() +
+  scale_fill_viridis() +
+  facet_wrap(~strength)
+```
+
+
+
+
+```{r}
+test2 %>%
+group_by(metacog, n_agents, strength) %>%
+  summarise(mean_final_acc = mean(final_accuracy),
+            mean_ind_acc = mean(ind_accuracy),
+            mean_group_acc = mean(group_accuracy)) %>%
+  mutate(ind_diff = mean_final_acc - mean_ind_acc,
+         group_diff = mean_final_acc - mean_group_acc) %>%
+  dplyr::select(metacog, n_agents, ind_diff, group_diff, strength) %>%
+  pivot_longer(cols = c(ind_diff, group_diff), names_to = 'Difference') %>%
+  ggplot(
+    aes(y = value, x = n_agents, color = factor(metacog))
+  ) +
+  geom_line() +
+  geom_hline(yintercept = 0, linetype = 'dashed') +
+  facet_grid(rows = vars(strength), cols = vars(Difference), scales = "free_y") +
+  scale_x_log10() +
+  scale_color_viridis(discrete = TRUE) +
+  theme_classic()
+```
+
+
+```{r}
+test2 %>%
+group_by(metacog, n_agents, strength) %>%
+  summarise(mean_final_acc = mean(final_accuracy),
+            mean_ind_acc = mean(ind_accuracy),
+            mean_group_acc = mean(group_accuracy)) %>%
+  mutate(ind_diff = mean_final_acc - mean_ind_acc,
+         group_diff = mean_final_acc - mean_group_acc) %>%
+  dplyr::select(metacog, n_agents, ind_diff, group_diff, strength) %>%
+  ggplot(
+    aes(y = factor(metacog), x = factor(n_agents), fill = group_diff)
+  ) +
+  geom_tile() +
+  facet_wrap(~strength) +
+  scale_fill_gradient2(low = 'red', mid = 'white', high = 'blue')
+```
+
+```{r}
+test2 %>%
+group_by(metacog, n_agents, strength) %>%
+  summarise(mean_final_acc = mean(final_accuracy),
+            mean_ind_acc = mean(ind_accuracy),
+            mean_group_acc = mean(group_accuracy)) %>%
+  mutate(ind_diff = mean_final_acc - mean_ind_acc,
+         group_diff = mean_final_acc - mean_group_acc) %>%
+  dplyr::select(metacog, n_agents, ind_diff, group_diff, strength) %>%
+  ggplot(
+    aes(y = factor(metacog), x = factor(n_agents), fill = ind_diff)
+  ) +
+  geom_tile() +
+  facet_wrap(~strength) +
+  scale_fill_gradient2(low = 'red', mid = 'white', high = 'blue')
+```
+
+
+
+
+```{r}
+test2 %>%
+  filter(group_accuracy != final_accuracy) %>%
+  mutate(diff = ifelse(final_accuracy == 1, 1, 0)) %>%
+  group_by(metacog, n_agents, strength) %>%
+  summarise(mean_diff = mean(diff)) %>%
+  ggplot(
+    aes(y = factor(metacog), x = factor(n_agents), fill = mean_diff)
+  ) +
+  geom_tile() +
+  facet_wrap(~strength, ncol = 1) +
+  scale_fill_viridis()
+```
+
+
+
+
+```{r}
+test2 %>%
+  mutate(change = ifelse(decision != deterministic_conf, 1, 0)) %>%
+  group_by(metacog, n_agents, strength) %>%
+  summarise(mean_change = mean(change)) %>%
+  ggplot(
+    aes(x = factor(n_agents), y = factor(metacog), fill = mean_change)
+  ) +
+  geom_tile() +
+  scale_fill_viridis() +
+  facet_wrap(~strength)
+```
+
+```{r}
+test2 %>%
+  group_by(metacog, n_agents, strength) %>%
+  summarise(mean_final = mean(final_accuracy),
+            mean_social = mean(social_info)) %>%
+  ggplot(aes(x = mean_social, y = mean_final)) + geom_point()
 ```
 
 
@@ -369,4 +959,56 @@ metacog_agent_sampler <- function(n_trials, mu_value, inf_sigma, conf_sigma, rho
 
 
 
+
+## Different decision computation
+
+```{r}
+new_frequency_function <- function(prop_a, n_agents, output = 'a'){
+  freq_a <- prop_a*n_agents
+  freq_b <- n_agents-freq_a
+  
+  new_freq_a <- freq_a^log(n_agents)
+  new_freq_b <- freq_b^log(n_agents)
+  common_denominator <- new_freq_a + new_freq_b
+  new_prop_a <- new_freq_a/common_denominator
+  new_prop_b <- new_freq_b/common_denominator
+  
+  if(output == 'a'){
+    return(new_prop_a)
+  }
+  else{
+    return(new_prop_b)
+  }
+}
+```
+
+We recompute the frequency of each option by exponentiating each number to the natural log of the number of agents and thus recompute all the decision process.
+
+
+```{r}
+test2 <- test %>% 
+  mutate(
+      new_a = new_frequency_function(a, n_agents),
+      trans_X = exp(x_inf)/(1+exp(x_inf)),
+      asocial_info = confidence*trans_X,
+      social_info = (1-confidence)*new_a,
+      conf_P = social_info + asocial_info,
+      deterministic_conf = ifelse(conf_P > 0.5, 1, -1),
+      prob_conf = rbinom(1,1,conf_P),
+      ind_accuracy = ifelse(decision == 1, 1, 0),
+      group_accuracy = ifelse(a > 0.5, 1, 0),
+      final_accuracy = ifelse(deterministic_conf == 1, 1, 0)
+  )
+```
+
+
+```{r}
+test2 %>% group_by(metacog, n_agents) %>%
+  summarise(mean_final_acc = mean(final_accuracy)) %>%
+  ggplot(
+    aes(x = factor(n_agents), y = factor(metacog), fill = mean_final_acc)
+  ) +
+  geom_tile() +
+  scale_fill_viridis()
+```
 
